@@ -1,6 +1,6 @@
-// JST: 2026-05-18 1 / main.js
-// OCRテンプレート認識 修復版
-// 目的：壊れた重複コードを除去し、カメラ起動・キャプチャ・候補領域表示・テンプレート保存を正常化する。
+// JST: 2026-05-19 1 / main.js
+// OCRテンプレート認識 修復版 + テンプレート照合機能
+// 目的：カメラ起動・キャプチャ・候補領域表示・テンプレート保存に加え、登録テンプレートとの画像比較で数字を判定する。
 
 const video = document.getElementById('cameraView');
 const captureButton = document.getElementById('captureButton');
@@ -18,10 +18,16 @@ const captureCanvas = document.getElementById('captureCanvas');
 const captureCtx = captureCanvas.getContext('2d');
 const overlayCtx = overlayCanvas.getContext('2d');
 
+// [CFG-01] テンプレート比較用の正規化サイズ。数字画像をこのサイズに縮小して比較する。
+const FEATURE_WIDTH = 24;
+const FEATURE_HEIGHT = 32;
+const DARK_THRESHOLD = 150;
+
 const state = {
   templates: [],
   lastCapture: null,
   lastRect: null,
+  lastFeature: null,
 };
 
 function setStatus(text) {
@@ -38,7 +44,8 @@ function loadTemplates() {
   try {
     const parsed = JSON.parse(raw);
     if (Array.isArray(parsed.templates)) {
-      state.templates = parsed.templates;
+      state.templates = parsed.templates.map(normalizeTemplate);
+      saveTemplates();
       renderTemplateList();
       setStatus('ローカル保存のテンプレートを読み込みました');
       return;
@@ -55,6 +62,19 @@ function saveTemplates() {
   localStorage.setItem('ocrTemplates', JSON.stringify(payload));
 }
 
+function normalizeTemplate(template) {
+  if (!template) {
+    return template;
+  }
+
+  if (!template.feature && template.imageDataUrl) {
+    // 古い保存データには feature が無いので、読み込み後の照合対象からは外さず、再登録を促す情報として残す。
+    template.featureStatus = 'needsRebuild';
+  }
+
+  return template;
+}
+
 function renderTemplateList() {
   templateList.innerHTML = '';
 
@@ -68,7 +88,8 @@ function renderTemplateList() {
   state.templates.forEach((template, index) => {
     const item = document.createElement('li');
     const label = document.createElement('span');
-    label.textContent = `${template.label} (${template.width}x${template.height})`;
+    const featureMark = template.feature ? '照合可' : '再登録推奨';
+    label.textContent = `${template.label} (${template.width}x${template.height}) ${featureMark}`;
 
     const remove = document.createElement('button');
     remove.textContent = '削除';
@@ -143,7 +164,7 @@ function detectNumberArea(imageData) {
       const b = data[offset + 2];
       const gray = (r + g + b) / 3;
 
-      if (gray < 150) {
+      if (gray < DARK_THRESHOLD) {
         dark += 1;
         if (x < minX) minX = x;
         if (x > maxX) maxX = x;
@@ -184,6 +205,68 @@ function cropRegion(rect) {
   return buffer.toDataURL('image/png');
 }
 
+function buildFeatureFromRect(rect) {
+  const source = document.createElement('canvas');
+  source.width = rect.width;
+  source.height = rect.height;
+  const sourceCtx = source.getContext('2d');
+  const imageData = captureCtx.getImageData(rect.x, rect.y, rect.width, rect.height);
+  sourceCtx.putImageData(imageData, 0, 0);
+
+  const normalized = document.createElement('canvas');
+  normalized.width = FEATURE_WIDTH;
+  normalized.height = FEATURE_HEIGHT;
+  const normalizedCtx = normalized.getContext('2d');
+  normalizedCtx.fillStyle = '#ffffff';
+  normalizedCtx.fillRect(0, 0, FEATURE_WIDTH, FEATURE_HEIGHT);
+  normalizedCtx.drawImage(source, 0, 0, FEATURE_WIDTH, FEATURE_HEIGHT);
+
+  const normalizedData = normalizedCtx.getImageData(0, 0, FEATURE_WIDTH, FEATURE_HEIGHT).data;
+  const feature = [];
+
+  for (let i = 0; i < normalizedData.length; i += 4) {
+    const r = normalizedData[i];
+    const g = normalizedData[i + 1];
+    const b = normalizedData[i + 2];
+    const gray = (r + g + b) / 3;
+    feature.push(gray < DARK_THRESHOLD ? 1 : 0);
+  }
+
+  return feature;
+}
+
+function compareFeatures(a, b) {
+  if (!a || !b || a.length !== b.length) {
+    return 999999;
+  }
+
+  let diff = 0;
+  for (let i = 0; i < a.length; i += 1) {
+    if (a[i] !== b[i]) {
+      diff += 1;
+    }
+  }
+  return diff / a.length;
+}
+
+function recognizeByTemplate(feature) {
+  const usableTemplates = state.templates.filter((template) => Array.isArray(template.feature));
+
+  if (usableTemplates.length === 0) {
+    return null;
+  }
+
+  let best = null;
+  usableTemplates.forEach((template) => {
+    const score = compareFeatures(feature, template.feature);
+    if (!best || score < best.score) {
+      best = { template, score };
+    }
+  });
+
+  return best;
+}
+
 function captureFrame() {
   if (!video.srcObject) {
     setStatus('カメラが開始されていません。ページを再読み込みして、カメラ権限を許可してください。');
@@ -205,6 +288,7 @@ function captureFrame() {
   const imageData = captureCtx.getImageData(0, 0, captureCanvas.width, captureCanvas.height);
   const rect = detectNumberArea(imageData);
   state.lastRect = rect;
+  state.lastFeature = null;
 
   if (!rect) {
     setStatus('数字領域が検出できませんでした。明るさや位置を調整してください。');
@@ -214,9 +298,20 @@ function captureFrame() {
     return;
   }
 
-  recognizedValue.textContent = '候補を検出しました';
-  candidateInfo.textContent = `検出領域: x=${rect.x}, y=${rect.y}, w=${rect.width}, h=${rect.height}`;
-  setStatus('キャプチャ完了 — 数字領域をオレンジの枠で表示しています');
+  state.lastFeature = buildFeatureFromRect(rect);
+  const result = recognizeByTemplate(state.lastFeature);
+
+  if (result) {
+    const percent = Math.round((1 - result.score) * 100);
+    recognizedValue.textContent = result.template.label;
+    candidateInfo.textContent = `検出領域: x=${rect.x}, y=${rect.y}, w=${rect.width}, h=${rect.height} / 一致度: ${percent}% / 差分: ${result.score.toFixed(3)}`;
+    setStatus(`キャプチャ完了 — テンプレート「${result.template.label}」に最も近いと判定しました`);
+  } else {
+    recognizedValue.textContent = '候補を検出しました';
+    candidateInfo.textContent = `検出領域: x=${rect.x}, y=${rect.y}, w=${rect.width}, h=${rect.height} / 照合可能なテンプレートがありません`;
+    setStatus('キャプチャ完了 — 先に数字ラベルを入力してテンプレート登録してください');
+  }
+
   drawOverlay(rect);
 }
 
@@ -233,10 +328,14 @@ function registerTemplate() {
   }
 
   const imageDataUrl = cropRegion(state.lastRect);
+  const feature = state.lastFeature || buildFeatureFromRect(state.lastRect);
   const template = {
     id: `template-${Date.now()}`,
     label,
     imageDataUrl,
+    feature,
+    featureWidth: FEATURE_WIDTH,
+    featureHeight: FEATURE_HEIGHT,
     width: state.lastRect.width,
     height: state.lastRect.height,
     createdAt: new Date().toISOString(),
@@ -245,7 +344,7 @@ function registerTemplate() {
   state.templates.push(template);
   saveTemplates();
   renderTemplateList();
-  setStatus(`テンプレート「${label}」を登録しました`);
+  setStatus(`テンプレート「${label}」を登録しました。次回キャプチャから照合できます。`);
   templateLabel.value = '';
 }
 
@@ -273,7 +372,7 @@ function importTemplates(file) {
         throw new Error('テンプレート形式が無効です');
       }
 
-      state.templates = parsed.templates;
+      state.templates = parsed.templates.map(normalizeTemplate);
       saveTemplates();
       renderTemplateList();
       setStatus('ローカルディスクからテンプレートを読み込みました');
