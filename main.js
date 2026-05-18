@@ -1,3 +1,7 @@
+// JST: 2026-05-18 1 / main.js
+// OCRテンプレート認識 修復版
+// 目的：壊れた重複コードを除去し、カメラ起動・キャプチャ・候補領域表示・テンプレート保存を正常化する。
+
 const video = document.getElementById('cameraView');
 const captureButton = document.getElementById('captureButton');
 const registerButton = document.getElementById('registerButton');
@@ -27,18 +31,23 @@ function setStatus(text) {
 function loadTemplates() {
   const raw = localStorage.getItem('ocrTemplates');
   if (!raw) {
+    renderTemplateList();
     return;
   }
+
   try {
     const parsed = JSON.parse(raw);
     if (Array.isArray(parsed.templates)) {
       state.templates = parsed.templates;
       renderTemplateList();
       setStatus('ローカル保存のテンプレートを読み込みました');
+      return;
     }
   } catch (error) {
     console.error(error);
   }
+
+  renderTemplateList();
 }
 
 function saveTemplates() {
@@ -48,6 +57,7 @@ function saveTemplates() {
 
 function renderTemplateList() {
   templateList.innerHTML = '';
+
   if (state.templates.length === 0) {
     const empty = document.createElement('li');
     empty.textContent = 'テンプレートがありません';
@@ -59,6 +69,7 @@ function renderTemplateList() {
     const item = document.createElement('li');
     const label = document.createElement('span');
     label.textContent = `${template.label} (${template.width}x${template.height})`;
+
     const remove = document.createElement('button');
     remove.textContent = '削除';
     remove.style.background = '#ef4444';
@@ -78,29 +89,50 @@ function renderTemplateList() {
   });
 }
 
+function syncCaptureCanvasSize() {
+  const width = video.videoWidth || 640;
+  const height = video.videoHeight || 480;
+
+  if (captureCanvas.width !== width) {
+    captureCanvas.width = width;
+  }
+  if (captureCanvas.height !== height) {
+    captureCanvas.height = height;
+  }
+}
+
 function drawOverlay(rect) {
-  overlayCanvas.width = previewImage.clientWidth;
-  overlayCanvas.height = previewImage.clientHeight;
+  const displayWidth = previewImage.clientWidth;
+  const displayHeight = previewImage.clientHeight;
+
+  overlayCanvas.width = displayWidth;
+  overlayCanvas.height = displayHeight;
   overlayCtx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
-  if (!rect) {
+
+  if (!rect || displayWidth === 0 || displayHeight === 0) {
     return;
   }
 
   const scaleX = overlayCanvas.width / captureCanvas.width;
   const scaleY = overlayCanvas.height / captureCanvas.height;
+
   overlayCtx.strokeStyle = '#f59e0b';
   overlayCtx.lineWidth = 4;
   overlayCtx.strokeRect(rect.x * scaleX, rect.y * scaleY, rect.width * scaleX, rect.height * scaleY);
+
   overlayCtx.fillStyle = 'rgba(245, 158, 11, 0.18)';
   overlayCtx.fillRect(rect.x * scaleX, rect.y * scaleY, rect.width * scaleX, rect.height * scaleY);
 }
 
 function detectNumberArea(imageData) {
-  const { data, width, height } = imageData;
+  const data = imageData.data;
+  const width = imageData.width;
+  const height = imageData.height;
+
   let minX = width;
   let minY = height;
-  let maxX = 0;
-  let maxY = 0;
+  let maxX = -1;
+  let maxY = -1;
   let dark = 0;
 
   for (let y = 0; y < height; y += 1) {
@@ -110,6 +142,7 @@ function detectNumberArea(imageData) {
       const g = data[offset + 1];
       const b = data[offset + 2];
       const gray = (r + g + b) / 3;
+
       if (gray < 150) {
         dark += 1;
         if (x < minX) minX = x;
@@ -128,8 +161,8 @@ function detectNumberArea(imageData) {
   const padding = 8;
   const x0 = Math.max(0, minX - padding);
   const y0 = Math.max(0, minY - padding);
-  const x1 = Math.min(width, maxX + padding);
-  const y1 = Math.min(height, maxY + padding);
+  const x1 = Math.min(width, maxX + padding + 1);
+  const y1 = Math.min(height, maxY + padding + 1);
 
   return {
     x: x0,
@@ -144,13 +177,27 @@ function cropRegion(rect) {
   const buffer = document.createElement('canvas');
   buffer.width = rect.width;
   buffer.height = rect.height;
+
   const ctx = buffer.getContext('2d');
   ctx.putImageData(imageData, 0, 0);
+
   return buffer.toDataURL('image/png');
 }
 
 function captureFrame() {
+  if (!video.srcObject) {
+    setStatus('カメラが開始されていません。ページを再読み込みして、カメラ権限を許可してください。');
+    return;
+  }
+
+  if (video.readyState < 2) {
+    setStatus('カメラ映像の準備中です。少し待ってからもう一度キャプチャしてください。');
+    return;
+  }
+
+  syncCaptureCanvasSize();
   captureCtx.drawImage(video, 0, 0, captureCanvas.width, captureCanvas.height);
+
   const dataUrl = captureCanvas.toDataURL('image/png');
   previewImage.src = dataUrl;
   state.lastCapture = dataUrl;
@@ -158,6 +205,7 @@ function captureFrame() {
   const imageData = captureCtx.getImageData(0, 0, captureCanvas.width, captureCanvas.height);
   const rect = detectNumberArea(imageData);
   state.lastRect = rect;
+
   if (!rect) {
     setStatus('数字領域が検出できませんでした。明るさや位置を調整してください。');
     recognizedValue.textContent = '未認識';
@@ -206,21 +254,25 @@ function exportTemplates() {
   const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
+
   a.href = url;
   a.download = 'ocr-templates.json';
   a.click();
+
   URL.revokeObjectURL(url);
   setStatus('テンプレートをローカルディスクに保存しました');
 }
 
 function importTemplates(file) {
   const reader = new FileReader();
+
   reader.onload = () => {
     try {
       const parsed = JSON.parse(reader.result);
       if (!Array.isArray(parsed.templates)) {
         throw new Error('テンプレート形式が無効です');
       }
+
       state.templates = parsed.templates;
       saveTemplates();
       renderTemplateList();
@@ -230,26 +282,13 @@ function importTemplates(file) {
       setStatus('テンプレートの読み込みに失敗しました');
     }
   };
+
   reader.readAsText(file);
 }
 
-captureButton.addEventListener('click', captureFrame);
-registerButton.addEventListener('click', registerTemplate);
-exportButton.addEventListener('click', exportTemplates);
-importInput.addEventListener('change', (event) => {
-  const file = event.target.files?.[0];
-  if (file) {
-    importTemplates(file);
-  }
-});
-
-previewImage.addEventListener('load', () => {
-  drawOverlay(state.lastRect);
-});
-
 async function startCamera() {
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-    setStatus('このブラウザはカメラの取得に対応していません。Chrome や Edge などの最新ブラウザで開いてください。');
+    setStatus('このブラウザはカメラの取得に対応していません。Chrome や Edge などの新しいブラウザで開いてください。');
     return;
   }
 
@@ -259,7 +298,11 @@ async function startCamera() {
   }
 
   try {
-    const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: 'environment' },
+      audio: false,
+    });
+
     video.srcObject = stream;
     setStatus('カメラを開始しました');
   } catch (error) {
@@ -269,173 +312,29 @@ async function startCamera() {
   }
 }
 
+function bindEvents() {
+  captureButton.addEventListener('click', captureFrame);
+  registerButton.addEventListener('click', registerTemplate);
+  exportButton.addEventListener('click', exportTemplates);
+
+  importInput.addEventListener('change', (event) => {
+    const file = event.target.files && event.target.files.length > 0 ? event.target.files[0] : null;
+    if (file) {
+      importTemplates(file);
+    }
+  });
+
+  previewImage.addEventListener('load', () => {
+    drawOverlay(state.lastRect);
+  });
+
+  window.addEventListener('resize', () => {
+    drawOverlay(state.lastRect);
+  });
+}
+
 window.addEventListener('DOMContentLoaded', () => {
+  bindEvents();
   loadTemplates();
   startCamera();
 });
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-});  startCamera();  loadTemplates();window.addEventListener('DOMContentLoaded', () => {}  }    setStatus('カメラの起動に失敗しました。権限を確認してください。');    console.error(error);  } catch (error) {    setStatus('カメラを開始しました');    video.srcObject = stream;    const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });  try {async function startCamera() {});  drawOverlay(state.lastRect);  overlayCanvas.height = previewImage.clientHeight;  overlayCanvas.width = previewImage.clientWidth;previewImage.addEventListener('load', () => {});  }    importTemplates(file);  if (file) {  const file = event.target.files?.[0];importInput.addEventListener('change', (event) => {exportButton.addEventListener('click', () => exportTemplates());registerButton.addEventListener('click', () => registerTemplate());captureButton.addEventListener('click', () => captureFrame());}  reader.readAsText(file);  };    }      setStatus('テンプレートの読み込みに失敗しました');      console.error(error);    } catch (error) {      setStatus('ローカルディスクからテンプレートを読み込みました');      renderTemplateList();      saveTemplates();      state.templates = parsed.templates;      }        throw new Error('テンプレート形式が無効です');      if (!Array.isArray(parsed.templates)) {      const parsed = JSON.parse(reader.result);    try {  reader.onload = () => {  const reader = new FileReader();function importTemplates(file) {}  setStatus('テンプレートをローカルディスクに保存しました');  URL.revokeObjectURL(url);  a.click();  a.download = 'ocr-templates.json';  a.href = url;  const a = document.createElement('a');  const url = URL.createObjectURL(blob);  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });  const payload = { templates: state.templates };function exportTemplates() {}  templateLabel.value = '';  setStatus(`テンプレート「${label}」を登録しました`);  renderTemplateList();  saveTemplates();  state.templates.push(template);  };    createdAt: new Date().toISOString(),    height: state.lastRect.height,    width: state.lastRect.width,    imageDataUrl,    label,    id: `template-${Date.now()}`,  const template = {  const imageDataUrl = cropRegion(state.lastRect);  }    return;    setStatus('テンプレートのラベルを入力してください');  if (label.length === 0) {  const label = templateLabel.value.trim();  }    return;    setStatus('先に「キャプチャ」を実行して認識領域を取得してください');  if (!state.lastRect) {function registerTemplate() {}  setStatus('キャプチャ完了 — 数字領域をオレンジの枠で表示しています');  candidateInfo.textContent = `検出領域: x=${rect.x}, y=${rect.y}, w=${rect.width}, h=${rect.height}`;  recognizedValue.textContent = '候補を検出しました';  drawOverlay(rect);  }    return;    drawOverlay(null);    candidateInfo.textContent = '数字の候補領域が見つかりません。';    recognizedValue.textContent = '未認識';    setStatus('数字領域が検出できませんでした。明るさや位置を調整してください。');  if (!rect) {  state.lastRect = rect;  const rect = detectNumberArea(imageData);  const imageData = captureCtx.getImageData(0, 0, captureCanvas.width, captureCanvas.height);  state.lastCapture = dataUrl;  previewImage.src = dataUrl;  const dataUrl = captureCanvas.toDataURL('image/png');  captureCtx.drawImage(video, 0, 0, captureCanvas.width, captureCanvas.height);function captureFrame() {}  return buffer.toDataURL('image/png');  ctx.putImageData(imageData, 0, 0);  const ctx = buffer.getContext('2d');  buffer.height = rect.height;  buffer.width = rect.width;  const buffer = document.createElement('canvas');  const imageData = captureCtx.getImageData(rect.x, rect.y, rect.width, rect.height);function cropRegion(rect) {}  return rect;  };    height: Math.min(height - 1, maxY - minY + padding * 2),    width: Math.min(width - 1, maxX - minX + padding * 2),    y: Math.max(0, minY - padding),    x: Math.max(0, minX - padding),  const rect = {  const padding = 8;  }    return null;  if (dark < minArea || maxX <= minX || maxY <= minY) {  const minArea = 1000;  }    }      }        if (y > maxY) maxY = y;        if (y < minY) minY = y;        if (x > maxX) maxX = x;        if (x < minX) minX = x;        dark += 1;      if (gray < 150) {      const gray = (r + g + b) / 3;      const b = data[offset + 2];      const g = data[offset + 1];      const r = data[offset];      const offset = (y * width + x) * 4;    for (let x = 0; x < width; x += 1) {  for (let y = 0; y < height; y += 1) {  let dark = 0;  let maxY = 0;  let maxX = 0;  let minY = height;  let minX = width;  const { data, width, height } = imageData;function detectNumberArea(imageData) {}9
