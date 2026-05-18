@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>OCR テンプレート認識</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <main>
+    <header>
+      <h1>OCR テンプレート認識</h1>
+      <p>カメラ画像を取得して、数字領域を四角で囲んで表示します。</p>
+    </header>
+
+    <section class="camera-panel">
+      <div class="video-card">
+        <label>カメラ映像</label>
+        <video id="cameraView" autoplay playsinline muted></video>
+      </div>
+
+      <div class="controls-card">
+        <button id="captureButton">キャプチャ</button>
+        <button id="registerButton">テンプレート登録</button>
+        <button id="exportButton">テンプレート保存</button>
+        <label class="file-button">
+          テンプレート読み込み
+          <input id="importInput" type="file" accept="application/json" />
+        </label>
+        <div id="statusArea" class="status">準備完了</div>
+      </div>
+    </section>
+
+    <section class="result-panel">
+      <div class="result-card">
+        <h2>認識結果</h2>
+        <div id="recognizedValue" class="recognized-value">まだ認識していません</div>
+        <div id="candidateInfo" class="candidate-info"></div>
+      </div>
+
+      <div class="template-card">
+        <h2>登録テンプレート</h2>
+        <div class="template-inputs">
+          <input id="templateLabel" type="text" maxlength="10" placeholder="数字ラベルを入力" />
+        </div>
+        <ul id="templateList" class="template-list"></ul>
+      </div>
+    </section>
+
+    <section class="preview-panel">
+      <h2>キャプチャ画像プレビュー</h2>
+      <div class="preview-container">
+        <img id="previewImage" alt="キャプチャ画像" />
+        <canvas id="overlayCanvas"></canvas>
+      </div>
+    </section>
+
+    <canvas id="captureCanvas" width="640" height="480" class="hidden"></canvas>
+  </main>
+  <script src="main.js"></script>
+</body>
+</html>
