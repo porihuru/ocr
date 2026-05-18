@@ -248,13 +248,24 @@ previewImage.addEventListener('load', () => {
 });
 
 async function startCamera() {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    setStatus('このブラウザはカメラの取得に対応していません。Chrome や Edge などの最新ブラウザで開いてください。');
+    return;
+  }
+
+  if (location.protocol !== 'https:' && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
+    setStatus('カメラは HTTPS または localhost からのみ使用できます。ローカルサーバーでページを開いてください。');
+    return;
+  }
+
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
     video.srcObject = stream;
     setStatus('カメラを開始しました');
   } catch (error) {
     console.error(error);
-    setStatus('カメラの起動に失敗しました。権限を確認してください。');
+    const message = error && error.message ? error.message : '不明なエラー';
+    setStatus(`カメラの起動に失敗しました: ${message}`);
   }
 }
 
