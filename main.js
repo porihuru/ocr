@@ -1,6 +1,6 @@
-// JST: 2026-05-19 6 / main.js
-// OCRテンプレート認識 修復版 + 複数桁対応 + Tesseract.js数字認識 + 読取数字オーバーレイ表示
-// 目的：カメラ起動・キャプチャ・候補領域表示・テンプレート保存に加え、読んだ数字をプレビュー画像上へ直接表示する。
+// JST: 2026-05-19 7 / main.js
+// OCRテンプレート認識 修復版 + 複数桁対応 + Tesseract.js数字認識 + 赤字オーバーレイ表示
+// 目的：読んだ数字を、黒背景なしの赤字で、読み取った座標中央へ直接表示する。
 
 const video = document.getElementById('cameraView');
 const captureButton = document.getElementById('captureButton');
@@ -134,23 +134,23 @@ function syncCaptureCanvasSize() {
   if (captureCanvas.height !== height) captureCanvas.height = height;
 }
 
-function drawTextLabelOnOverlay(text, x, y) {
+function drawTextLabelOnOverlay(text, x, y, w, h) {
   const safeText = String(text || '?');
-  overlayCtx.font = 'bold 22px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
-  overlayCtx.textBaseline = 'top';
-  const metrics = overlayCtx.measureText(safeText);
-  const labelWidth = Math.max(28, metrics.width + 14);
-  const labelHeight = 30;
-  const labelX = Math.max(4, x);
-  const labelY = Math.max(4, y - labelHeight - 4);
+  overlayCtx.save();
+  overlayCtx.font = 'bold 28px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+  overlayCtx.textAlign = 'center';
+  overlayCtx.textBaseline = 'middle';
 
-  overlayCtx.fillStyle = 'rgba(0, 0, 0, 0.78)';
-  overlayCtx.fillRect(labelX, labelY, labelWidth, labelHeight);
-  overlayCtx.strokeStyle = '#22c55e';
-  overlayCtx.lineWidth = 2;
-  overlayCtx.strokeRect(labelX, labelY, labelWidth, labelHeight);
-  overlayCtx.fillStyle = '#ffffff';
-  overlayCtx.fillText(safeText, labelX + 7, labelY + 4);
+  const centerX = x + w / 2;
+  const centerY = y + h / 2;
+
+  overlayCtx.lineWidth = 4;
+  overlayCtx.strokeStyle = '#ffffff';
+  overlayCtx.strokeText(safeText, centerX, centerY);
+
+  overlayCtx.fillStyle = '#ef0000';
+  overlayCtx.fillText(safeText, centerX, centerY);
+  overlayCtx.restore();
 }
 
 function drawOverlay(rect) {
@@ -192,7 +192,7 @@ function drawOverlay(rect) {
       overlayCtx.strokeStyle = label.source === 'tesseract' ? '#38bdf8' : '#22c55e';
       overlayCtx.lineWidth = 3;
       overlayCtx.strokeRect(x, y, w, h);
-      drawTextLabelOnOverlay(label.text, x, y);
+      drawTextLabelOnOverlay(label.text, x, y, w, h);
     });
   }
 }
