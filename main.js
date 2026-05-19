@@ -1,6 +1,6 @@
-// JST: 2026-05-19 1 / main.js
-// OCRテンプレート認識 修復版 + テンプレート照合機能
-// 目的：カメラ起動・キャプチャ・候補領域表示・テンプレート保存に加え、登録テンプレートとの画像比較で数字を判定する。
+// JST: 2026-05-19 2 / main.js
+// OCRテンプレート認識 修復版 + 複数桁対応 + 数字以外除外 + 二値化/ノイズ除去
+// 目的：カメラ起動・キャプチャ・候補領域表示・テンプレート保存に加え、登録テンプレートとの画像比較で複数桁数字を判定する。
 
 const video = document.getElementById('cameraView');
 const captureButton = document.getElementById('captureButton');
@@ -22,12 +22,18 @@ const overlayCtx = overlayCanvas.getContext('2d');
 const FEATURE_WIDTH = 24;
 const FEATURE_HEIGHT = 32;
 const DARK_THRESHOLD = 150;
+const MIN_COMPONENT_PIXELS = 12;
+const MIN_DIGIT_WIDTH = 3;
+const MIN_DIGIT_HEIGHT = 8;
+const MAX_DIGIT_COUNT = 12;
+const MAX_ACCEPT_SCORE = 0.45;
 
 const state = {
   templates: [],
   lastCapture: null,
   lastRect: null,
   lastFeature: null,
+  lastDigitRects: [],
 };
 
 function setStatus(text) {
@@ -68,7 +74,6 @@ function normalizeTemplate(template) {
   }
 
   if (!template.feature && template.imageDataUrl) {
-    // 古い保存データには feature が無いので、読み込み後の照合対象からは外さず、再登録を促す情報として残す。
     template.featureStatus = 'needsRebuild';
   }
 
@@ -143,6 +148,23 @@ function drawOverlay(rect) {
 
   overlayCtx.fillStyle = 'rgba(245, 158, 11, 0.18)';
   overlayCtx.fillRect(rect.x * scaleX, rect.y * scaleY, rect.width * scaleX, rect.height * scaleY);
+
+  if (state.lastDigitRects && state.lastDigitRects.length > 0) {
+    overlayCtx.strokeStyle = '#22c55e';
+    overlayCtx.lineWidth = 2;
+    state.lastDigitRects.forEach((digitRect) => {
+      overlayCtx.strokeRect(digitRect.x * scaleX, digitRect.y * scaleY, digitRect.width * scaleX, digitRect.height * scaleY);
+    });
+  }
+}
+
+function isDarkPixel(data, width, x, y) {
+  const offset = (y * width + x) * 4;
+  const r = data[offset];
+  const g = data[offset + 1];
+  const b = data[offset + 2];
+  const gray = (r + g + b) / 3;
+  return gray < DARK_THRESHOLD;
 }
 
 function detectNumberArea(imageData) {
@@ -158,13 +180,7 @@ function detectNumberArea(imageData) {
 
   for (let y = 0; y < height; y += 1) {
     for (let x = 0; x < width; x += 1) {
-      const offset = (y * width + x) * 4;
-      const r = data[offset];
-      const g = data[offset + 1];
-      const b = data[offset + 2];
-      const gray = (r + g + b) / 3;
-
-      if (gray < DARK_THRESHOLD) {
+      if (isDarkPixel(data, width, x, y)) {
         dark += 1;
         if (x < minX) minX = x;
         if (x > maxX) maxX = x;
@@ -191,6 +207,91 @@ function detectNumberArea(imageData) {
     width: x1 - x0,
     height: y1 - y0,
   };
+}
+
+function detectDigitRectsInArea(areaRect) {
+  const imageData = captureCtx.getImageData(areaRect.x, areaRect.y, areaRect.width, areaRect.height);
+  const data = imageData.data;
+  const width = imageData.width;
+  const height = imageData.height;
+
+  const hasInk = [];
+  for (let x = 0; x < width; x += 1) {
+    let count = 0;
+    for (let y = 0; y < height; y += 1) {
+      if (isDarkPixel(data, width, x, y)) {
+        count += 1;
+      }
+    }
+    hasInk[x] = count >= 1;
+  }
+
+  const segments = [];
+  let inSegment = false;
+  let startX = 0;
+  let blankRun = 0;
+
+  for (let x = 0; x < width; x += 1) {
+    if (hasInk[x]) {
+      if (!inSegment) {
+        inSegment = true;
+        startX = x;
+      }
+      blankRun = 0;
+    } else if (inSegment) {
+      blankRun += 1;
+      if (blankRun >= 2) {
+        segments.push({ startX, endX: x - blankRun });
+        inSegment = false;
+        blankRun = 0;
+      }
+    }
+  }
+
+  if (inSegment) {
+    segments.push({ startX, endX: width - 1 });
+  }
+
+  const rects = [];
+  segments.forEach((segment) => {
+    let minX = segment.startX;
+    let maxX = segment.endX;
+    let minY = height;
+    let maxY = -1;
+    let pixels = 0;
+
+    for (let y = 0; y < height; y += 1) {
+      for (let x = segment.startX; x <= segment.endX; x += 1) {
+        if (isDarkPixel(data, width, x, y)) {
+          pixels += 1;
+          if (y < minY) minY = y;
+          if (y > maxY) maxY = y;
+        }
+      }
+    }
+
+    const digitWidth = maxX - minX + 1;
+    const digitHeight = maxY - minY + 1;
+    const aspect = digitHeight > 0 ? digitWidth / digitHeight : 0;
+
+    if (
+      pixels >= MIN_COMPONENT_PIXELS &&
+      digitWidth >= MIN_DIGIT_WIDTH &&
+      digitHeight >= MIN_DIGIT_HEIGHT &&
+      aspect <= 1.4
+    ) {
+      const padding = 3;
+      rects.push({
+        x: Math.max(0, areaRect.x + minX - padding),
+        y: Math.max(0, areaRect.y + minY - padding),
+        width: Math.min(captureCanvas.width - (areaRect.x + minX - padding), digitWidth + padding * 2),
+        height: Math.min(captureCanvas.height - (areaRect.y + minY - padding), digitHeight + padding * 2),
+        pixels,
+      });
+    }
+  });
+
+  return rects.slice(0, MAX_DIGIT_COUNT);
 }
 
 function cropRegion(rect) {
@@ -250,7 +351,9 @@ function compareFeatures(a, b) {
 }
 
 function recognizeByTemplate(feature) {
-  const usableTemplates = state.templates.filter((template) => Array.isArray(template.feature));
+  const usableTemplates = state.templates.filter((template) => {
+    return Array.isArray(template.feature) && /^[0-9]$/.test(String(template.label));
+  });
 
   if (usableTemplates.length === 0) {
     return null;
@@ -264,7 +367,44 @@ function recognizeByTemplate(feature) {
     }
   });
 
+  if (best && best.score > MAX_ACCEPT_SCORE) {
+    return null;
+  }
+
   return best;
+}
+
+function recognizeMultipleDigits(areaRect) {
+  const digitRects = detectDigitRectsInArea(areaRect);
+  state.lastDigitRects = digitRects;
+
+  if (digitRects.length === 0) {
+    return null;
+  }
+
+  const parts = [];
+  const details = [];
+  let accepted = 0;
+
+  digitRects.forEach((digitRect, index) => {
+    const feature = buildFeatureFromRect(digitRect);
+    const result = recognizeByTemplate(feature);
+    if (result) {
+      accepted += 1;
+      parts.push(String(result.template.label));
+      details.push(`${index + 1}:${result.template.label}(${Math.round((1 - result.score) * 100)}%)`);
+    } else {
+      parts.push('?');
+      details.push(`${index + 1}:不明`);
+    }
+  });
+
+  return {
+    text: parts.join(''),
+    accepted,
+    total: digitRects.length,
+    details: details.join(' / '),
+  };
 }
 
 function captureFrame() {
@@ -289,6 +429,7 @@ function captureFrame() {
   const rect = detectNumberArea(imageData);
   state.lastRect = rect;
   state.lastFeature = null;
+  state.lastDigitRects = [];
 
   if (!rect) {
     setStatus('数字領域が検出できませんでした。明るさや位置を調整してください。');
@@ -299,17 +440,26 @@ function captureFrame() {
   }
 
   state.lastFeature = buildFeatureFromRect(rect);
-  const result = recognizeByTemplate(state.lastFeature);
+  const multiResult = recognizeMultipleDigits(rect);
+  const singleResult = recognizeByTemplate(state.lastFeature);
 
-  if (result) {
-    const percent = Math.round((1 - result.score) * 100);
-    recognizedValue.textContent = result.template.label;
-    candidateInfo.textContent = `検出領域: x=${rect.x}, y=${rect.y}, w=${rect.width}, h=${rect.height} / 一致度: ${percent}% / 差分: ${result.score.toFixed(3)}`;
-    setStatus(`キャプチャ完了 — テンプレート「${result.template.label}」に最も近いと判定しました`);
+  if (multiResult && multiResult.total > 1) {
+    recognizedValue.textContent = multiResult.text;
+    candidateInfo.textContent = `検出領域: x=${rect.x}, y=${rect.y}, w=${rect.width}, h=${rect.height} / 桁数: ${multiResult.total} / 読取: ${multiResult.details}`;
+    setStatus(`数字を読み取りました — ${multiResult.text}`);
+  } else if (singleResult) {
+    const percent = Math.round((1 - singleResult.score) * 100);
+    recognizedValue.textContent = singleResult.template.label;
+    candidateInfo.textContent = `検出領域: x=${rect.x}, y=${rect.y}, w=${rect.width}, h=${rect.height} / 一致度: ${percent}% / 差分: ${singleResult.score.toFixed(3)}`;
+    setStatus(`数字を読み取りました — ${singleResult.template.label}`);
+  } else if (multiResult) {
+    recognizedValue.textContent = multiResult.text;
+    candidateInfo.textContent = `検出領域: x=${rect.x}, y=${rect.y}, w=${rect.width}, h=${rect.height} / 桁数: ${multiResult.total} / 読取: ${multiResult.details}`;
+    setStatus('数字候補を検出しました。一部の数字は不明です。');
   } else {
     recognizedValue.textContent = '候補を検出しました';
-    candidateInfo.textContent = `検出領域: x=${rect.x}, y=${rect.y}, w=${rect.width}, h=${rect.height} / 照合可能なテンプレートがありません`;
-    setStatus('キャプチャ完了 — 先に数字ラベルを入力してテンプレート登録してください');
+    candidateInfo.textContent = `検出領域: x=${rect.x}, y=${rect.y}, w=${rect.width}, h=${rect.height} / 照合可能な数字テンプレートがありません`;
+    setStatus('数字候補を検出しました。0〜9を1つずつテンプレート登録してください。');
   }
 
   drawOverlay(rect);
@@ -317,18 +467,19 @@ function captureFrame() {
 
 function registerTemplate() {
   if (!state.lastRect) {
-    setStatus('先に「キャプチャ」を実行して認識領域を取得してください');
+    setStatus('先に「数字を読む」を実行して認識領域を取得してください');
     return;
   }
 
   const label = templateLabel.value.trim();
-  if (label.length === 0) {
-    setStatus('テンプレートのラベルを入力してください');
+  if (!/^[0-9]$/.test(label)) {
+    setStatus('テンプレートのラベルは 0〜9 の数字1文字で入力してください');
     return;
   }
 
-  const imageDataUrl = cropRegion(state.lastRect);
-  const feature = state.lastFeature || buildFeatureFromRect(state.lastRect);
+  const rectForTemplate = state.lastDigitRects && state.lastDigitRects.length === 1 ? state.lastDigitRects[0] : state.lastRect;
+  const imageDataUrl = cropRegion(rectForTemplate);
+  const feature = buildFeatureFromRect(rectForTemplate);
   const template = {
     id: `template-${Date.now()}`,
     label,
@@ -336,15 +487,15 @@ function registerTemplate() {
     feature,
     featureWidth: FEATURE_WIDTH,
     featureHeight: FEATURE_HEIGHT,
-    width: state.lastRect.width,
-    height: state.lastRect.height,
+    width: rectForTemplate.width,
+    height: rectForTemplate.height,
     createdAt: new Date().toISOString(),
   };
 
   state.templates.push(template);
   saveTemplates();
   renderTemplateList();
-  setStatus(`テンプレート「${label}」を登録しました。次回キャプチャから照合できます。`);
+  setStatus(`数字テンプレート「${label}」を登録しました。次回から複数桁読取に使用できます。`);
   templateLabel.value = '';
 }
 
