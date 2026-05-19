@@ -7,12 +7,12 @@
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <div class="app-version">v2026.05.19-3</div>
+  <div class="app-version">v2026.05.19-4</div>
 
   <main>
     <header>
       <h1>OCR テンプレート認識</h1>
-      <p>カメラ画像を取得して、テンプレート方式または Google Vision で数字を読み取ります。</p>
+      <p>カメラ画像を取得して、テンプレート方式または Tesseract.js で数字を読み取ります。</p>
     </header>
 
     <section class="camera-panel">
@@ -23,8 +23,7 @@
 
       <div class="controls-card">
         <button id="captureButton">数字を読む</button>
-        <button id="visionButton">Google Visionで読む</button>
-        <input id="visionApiKey" type="password" placeholder="Google Vision APIキー" />
+        <button id="tesseractButton">Tesseractで読む</button>
         <button id="registerButton">テンプレート登録</button>
         <button id="exportButton">テンプレート保存</button>
         <label class="file-button">
@@ -61,6 +60,7 @@
 
     <canvas id="captureCanvas" width="640" height="480" class="hidden"></canvas>
   </main>
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
   <script src="main.js"></script>
 </body>
 </html>
