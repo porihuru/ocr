@@ -1,9 +1,10 @@
-// JST: 2026-05-19 2 / main.js
-// OCRテンプレート認識 修復版 + 複数桁対応 + 数字以外除外 + 二値化/ノイズ除去
-// 目的：カメラ起動・キャプチャ・候補領域表示・テンプレート保存に加え、登録テンプレートとの画像比較で複数桁数字を判定する。
+// JST: 2026-05-19 3 / main.js
+// OCRテンプレート認識 修復版 + 複数桁対応 + Tesseract.js数字認識
+// 目的：カメラ起動・キャプチャ・候補領域表示・テンプレート保存に加え、Tesseract.jsで数字を読み取る。
 
 const video = document.getElementById('cameraView');
 const captureButton = document.getElementById('captureButton');
+const tesseractButton = document.getElementById('tesseractButton');
 const registerButton = document.getElementById('registerButton');
 const exportButton = document.getElementById('exportButton');
 const importInput = document.getElementById('importInput');
@@ -18,7 +19,6 @@ const captureCanvas = document.getElementById('captureCanvas');
 const captureCtx = captureCanvas.getContext('2d');
 const overlayCtx = overlayCanvas.getContext('2d');
 
-// [CFG-01] テンプレート比較用の正規化サイズ。数字画像をこのサイズに縮小して比較する。
 const FEATURE_WIDTH = 24;
 const FEATURE_HEIGHT = 32;
 const DARK_THRESHOLD = 150;
@@ -34,6 +34,7 @@ const state = {
   lastRect: null,
   lastFeature: null,
   lastDigitRects: [],
+  isTesseractRunning: false,
 };
 
 function setStatus(text) {
@@ -69,14 +70,8 @@ function saveTemplates() {
 }
 
 function normalizeTemplate(template) {
-  if (!template) {
-    return template;
-  }
-
-  if (!template.feature && template.imageDataUrl) {
-    template.featureStatus = 'needsRebuild';
-  }
-
+  if (!template) return template;
+  if (!template.feature && template.imageDataUrl) template.featureStatus = 'needsRebuild';
   return template;
 }
 
@@ -118,26 +113,18 @@ function renderTemplateList() {
 function syncCaptureCanvasSize() {
   const width = video.videoWidth || 640;
   const height = video.videoHeight || 480;
-
-  if (captureCanvas.width !== width) {
-    captureCanvas.width = width;
-  }
-  if (captureCanvas.height !== height) {
-    captureCanvas.height = height;
-  }
+  if (captureCanvas.width !== width) captureCanvas.width = width;
+  if (captureCanvas.height !== height) captureCanvas.height = height;
 }
 
 function drawOverlay(rect) {
   const displayWidth = previewImage.clientWidth;
   const displayHeight = previewImage.clientHeight;
-
   overlayCanvas.width = displayWidth;
   overlayCanvas.height = displayHeight;
   overlayCtx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
 
-  if (!rect || displayWidth === 0 || displayHeight === 0) {
-    return;
-  }
+  if (!rect || displayWidth === 0 || displayHeight === 0) return;
 
   const scaleX = overlayCanvas.width / captureCanvas.width;
   const scaleY = overlayCanvas.height / captureCanvas.height;
@@ -171,7 +158,6 @@ function detectNumberArea(imageData) {
   const data = imageData.data;
   const width = imageData.width;
   const height = imageData.height;
-
   let minX = width;
   let minY = height;
   let maxX = -1;
@@ -190,23 +176,14 @@ function detectNumberArea(imageData) {
     }
   }
 
-  const minArea = 1000;
-  if (dark < minArea || maxX <= minX || maxY <= minY) {
-    return null;
-  }
+  if (dark < 1000 || maxX <= minX || maxY <= minY) return null;
 
   const padding = 8;
   const x0 = Math.max(0, minX - padding);
   const y0 = Math.max(0, minY - padding);
   const x1 = Math.min(width, maxX + padding + 1);
   const y1 = Math.min(height, maxY + padding + 1);
-
-  return {
-    x: x0,
-    y: y0,
-    width: x1 - x0,
-    height: y1 - y0,
-  };
+  return { x: x0, y: y0, width: x1 - x0, height: y1 - y0 };
 }
 
 function detectDigitRectsInArea(areaRect) {
@@ -214,14 +191,12 @@ function detectDigitRectsInArea(areaRect) {
   const data = imageData.data;
   const width = imageData.width;
   const height = imageData.height;
-
   const hasInk = [];
+
   for (let x = 0; x < width; x += 1) {
     let count = 0;
     for (let y = 0; y < height; y += 1) {
-      if (isDarkPixel(data, width, x, y)) {
-        count += 1;
-      }
+      if (isDarkPixel(data, width, x, y)) count += 1;
     }
     hasInk[x] = count >= 1;
   }
@@ -247,10 +222,7 @@ function detectDigitRectsInArea(areaRect) {
       }
     }
   }
-
-  if (inSegment) {
-    segments.push({ startX, endX: width - 1 });
-  }
+  if (inSegment) segments.push({ startX, endX: width - 1 });
 
   const rects = [];
   segments.forEach((segment) => {
@@ -274,12 +246,7 @@ function detectDigitRectsInArea(areaRect) {
     const digitHeight = maxY - minY + 1;
     const aspect = digitHeight > 0 ? digitWidth / digitHeight : 0;
 
-    if (
-      pixels >= MIN_COMPONENT_PIXELS &&
-      digitWidth >= MIN_DIGIT_WIDTH &&
-      digitHeight >= MIN_DIGIT_HEIGHT &&
-      aspect <= 1.4
-    ) {
+    if (pixels >= MIN_COMPONENT_PIXELS && digitWidth >= MIN_DIGIT_WIDTH && digitHeight >= MIN_DIGIT_HEIGHT && aspect <= 1.4) {
       const padding = 3;
       rects.push({
         x: Math.max(0, areaRect.x + minX - padding),
@@ -299,10 +266,8 @@ function cropRegion(rect) {
   const buffer = document.createElement('canvas');
   buffer.width = rect.width;
   buffer.height = rect.height;
-
   const ctx = buffer.getContext('2d');
   ctx.putImageData(imageData, 0, 0);
-
   return buffer.toDataURL('image/png');
 }
 
@@ -324,63 +289,38 @@ function buildFeatureFromRect(rect) {
 
   const normalizedData = normalizedCtx.getImageData(0, 0, FEATURE_WIDTH, FEATURE_HEIGHT).data;
   const feature = [];
-
   for (let i = 0; i < normalizedData.length; i += 4) {
-    const r = normalizedData[i];
-    const g = normalizedData[i + 1];
-    const b = normalizedData[i + 2];
-    const gray = (r + g + b) / 3;
+    const gray = (normalizedData[i] + normalizedData[i + 1] + normalizedData[i + 2]) / 3;
     feature.push(gray < DARK_THRESHOLD ? 1 : 0);
   }
-
   return feature;
 }
 
 function compareFeatures(a, b) {
-  if (!a || !b || a.length !== b.length) {
-    return 999999;
-  }
-
+  if (!a || !b || a.length !== b.length) return 999999;
   let diff = 0;
-  for (let i = 0; i < a.length; i += 1) {
-    if (a[i] !== b[i]) {
-      diff += 1;
-    }
-  }
+  for (let i = 0; i < a.length; i += 1) if (a[i] !== b[i]) diff += 1;
   return diff / a.length;
 }
 
 function recognizeByTemplate(feature) {
-  const usableTemplates = state.templates.filter((template) => {
-    return Array.isArray(template.feature) && /^[0-9]$/.test(String(template.label));
-  });
-
-  if (usableTemplates.length === 0) {
-    return null;
-  }
+  const usableTemplates = state.templates.filter((template) => Array.isArray(template.feature) && /^[0-9]$/.test(String(template.label)));
+  if (usableTemplates.length === 0) return null;
 
   let best = null;
   usableTemplates.forEach((template) => {
     const score = compareFeatures(feature, template.feature);
-    if (!best || score < best.score) {
-      best = { template, score };
-    }
+    if (!best || score < best.score) best = { template, score };
   });
 
-  if (best && best.score > MAX_ACCEPT_SCORE) {
-    return null;
-  }
-
+  if (best && best.score > MAX_ACCEPT_SCORE) return null;
   return best;
 }
 
 function recognizeMultipleDigits(areaRect) {
   const digitRects = detectDigitRectsInArea(areaRect);
   state.lastDigitRects = digitRects;
-
-  if (digitRects.length === 0) {
-    return null;
-  }
+  if (digitRects.length === 0) return null;
 
   const parts = [];
   const details = [];
@@ -399,31 +339,28 @@ function recognizeMultipleDigits(areaRect) {
     }
   });
 
-  return {
-    text: parts.join(''),
-    accepted,
-    total: digitRects.length,
-    details: details.join(' / '),
-  };
+  return { text: parts.join(''), accepted, total: digitRects.length, details: details.join(' / ') };
 }
 
-function captureFrame() {
+function captureCurrentFrame() {
   if (!video.srcObject) {
     setStatus('カメラが開始されていません。ページを再読み込みして、カメラ権限を許可してください。');
-    return;
+    return false;
   }
-
   if (video.readyState < 2) {
-    setStatus('カメラ映像の準備中です。少し待ってからもう一度キャプチャしてください。');
-    return;
+    setStatus('カメラ映像の準備中です。少し待ってからもう一度実行してください。');
+    return false;
   }
-
   syncCaptureCanvasSize();
   captureCtx.drawImage(video, 0, 0, captureCanvas.width, captureCanvas.height);
-
   const dataUrl = captureCanvas.toDataURL('image/png');
   previewImage.src = dataUrl;
   state.lastCapture = dataUrl;
+  return true;
+}
+
+function captureFrame() {
+  if (!captureCurrentFrame()) return;
 
   const imageData = captureCtx.getImageData(0, 0, captureCanvas.width, captureCanvas.height);
   const rect = detectNumberArea(imageData);
@@ -465,6 +402,88 @@ function captureFrame() {
   drawOverlay(rect);
 }
 
+function createTesseractImage() {
+  const imageData = captureCtx.getImageData(0, 0, captureCanvas.width, captureCanvas.height);
+  const rect = detectNumberArea(imageData) || { x: 0, y: 0, width: captureCanvas.width, height: captureCanvas.height };
+  state.lastRect = rect;
+  state.lastDigitRects = [];
+
+  const scale = 3;
+  const work = document.createElement('canvas');
+  work.width = rect.width * scale;
+  work.height = rect.height * scale;
+  const ctx = work.getContext('2d');
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(captureCanvas, rect.x, rect.y, rect.width, rect.height, 0, 0, work.width, work.height);
+
+  const data = ctx.getImageData(0, 0, work.width, work.height);
+  for (let i = 0; i < data.data.length; i += 4) {
+    const r = data.data[i];
+    const g = data.data[i + 1];
+    const b = data.data[i + 2];
+    const gray = (r + g + b) / 3;
+    const value = gray < 180 ? 0 : 255;
+    data.data[i] = value;
+    data.data[i + 1] = value;
+    data.data[i + 2] = value;
+    data.data[i + 3] = 255;
+  }
+  ctx.putImageData(data, 0, 0);
+  return work;
+}
+
+async function readByTesseract() {
+  if (state.isTesseractRunning) return;
+  if (!window.Tesseract) {
+    setStatus('Tesseract.jsが読み込まれていません。インターネット接続またはCDN読み込みを確認してください。');
+    return;
+  }
+  if (!captureCurrentFrame()) return;
+
+  state.isTesseractRunning = true;
+  if (tesseractButton) tesseractButton.disabled = true;
+  recognizedValue.textContent = '読取中...';
+  candidateInfo.textContent = '';
+  setStatus('Tesseractで数字を読み取り中です...');
+
+  try {
+    const targetCanvas = createTesseractImage();
+    const result = await Tesseract.recognize(targetCanvas, 'eng', {
+      logger: (m) => {
+        if (m && m.status) {
+          const progress = typeof m.progress === 'number' ? ` ${Math.round(m.progress * 100)}%` : '';
+          setStatus(`Tesseract: ${m.status}${progress}`);
+        }
+      },
+      tessedit_char_whitelist: '0123456789',
+    });
+
+    const rawText = result && result.data && result.data.text ? result.data.text : '';
+    const digits = rawText.replace(/[^0-9]/g, '');
+
+    if (digits.length > 0) {
+      recognizedValue.textContent = digits;
+      candidateInfo.textContent = `Tesseract結果: ${rawText.replace(/\s+/g, ' ').trim()} / 数字のみ: ${digits}`;
+      setStatus(`Tesseractで数字を読み取りました — ${digits}`);
+    } else {
+      recognizedValue.textContent = '未認識';
+      candidateInfo.textContent = `Tesseract結果: ${rawText.replace(/\s+/g, ' ').trim() || '空欄'} / 数字が見つかりませんでした`;
+      setStatus('Tesseractで数字を認識できませんでした。明るさ・ピント・距離を調整してください。');
+    }
+
+    drawOverlay(state.lastRect);
+  } catch (error) {
+    console.error(error);
+    const message = error && error.message ? error.message : '不明なエラー';
+    recognizedValue.textContent = 'エラー';
+    candidateInfo.textContent = message;
+    setStatus(`Tesseract実行エラー: ${message}`);
+  } finally {
+    state.isTesseractRunning = false;
+    if (tesseractButton) tesseractButton.disabled = false;
+  }
+}
+
 function registerTemplate() {
   if (!state.lastRect) {
     setStatus('先に「数字を読む」を実行して認識領域を取得してください');
@@ -504,25 +523,19 @@ function exportTemplates() {
   const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
-
   a.href = url;
   a.download = 'ocr-templates.json';
   a.click();
-
   URL.revokeObjectURL(url);
   setStatus('テンプレートをローカルディスクに保存しました');
 }
 
 function importTemplates(file) {
   const reader = new FileReader();
-
   reader.onload = () => {
     try {
       const parsed = JSON.parse(reader.result);
-      if (!Array.isArray(parsed.templates)) {
-        throw new Error('テンプレート形式が無効です');
-      }
-
+      if (!Array.isArray(parsed.templates)) throw new Error('テンプレート形式が無効です');
       state.templates = parsed.templates.map(normalizeTemplate);
       saveTemplates();
       renderTemplateList();
@@ -532,7 +545,6 @@ function importTemplates(file) {
       setStatus('テンプレートの読み込みに失敗しました');
     }
   };
-
   reader.readAsText(file);
 }
 
@@ -548,11 +560,7 @@ async function startCamera() {
   }
 
   try {
-    const stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: 'environment' },
-      audio: false,
-    });
-
+    const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' }, audio: false });
     video.srcObject = stream;
     setStatus('カメラを開始しました');
   } catch (error) {
@@ -564,23 +572,17 @@ async function startCamera() {
 
 function bindEvents() {
   captureButton.addEventListener('click', captureFrame);
+  if (tesseractButton) tesseractButton.addEventListener('click', readByTesseract);
   registerButton.addEventListener('click', registerTemplate);
   exportButton.addEventListener('click', exportTemplates);
 
   importInput.addEventListener('change', (event) => {
     const file = event.target.files && event.target.files.length > 0 ? event.target.files[0] : null;
-    if (file) {
-      importTemplates(file);
-    }
+    if (file) importTemplates(file);
   });
 
-  previewImage.addEventListener('load', () => {
-    drawOverlay(state.lastRect);
-  });
-
-  window.addEventListener('resize', () => {
-    drawOverlay(state.lastRect);
-  });
+  previewImage.addEventListener('load', () => drawOverlay(state.lastRect));
+  window.addEventListener('resize', () => drawOverlay(state.lastRect));
 }
 
 window.addEventListener('DOMContentLoaded', () => {
