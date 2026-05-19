@@ -1,6 +1,6 @@
-// JST: 2026-05-19 3 / main.js
-// OCRテンプレート認識 修復版 + 複数桁対応 + Tesseract.js数字認識
-// 目的：カメラ起動・キャプチャ・候補領域表示・テンプレート保存に加え、Tesseract.jsで数字を読み取る。
+// JST: 2026-05-19 6 / main.js
+// OCRテンプレート認識 修復版 + 複数桁対応 + Tesseract.js数字認識 + 読取数字オーバーレイ表示
+// 目的：カメラ起動・キャプチャ・候補領域表示・テンプレート保存に加え、読んだ数字をプレビュー画像上へ直接表示する。
 
 const video = document.getElementById('cameraView');
 const captureButton = document.getElementById('captureButton');
@@ -34,11 +34,28 @@ const state = {
   lastRect: null,
   lastFeature: null,
   lastDigitRects: [],
+  overlayLabels: [],
   isTesseractRunning: false,
 };
 
 function setStatus(text) {
   statusArea.textContent = text;
+}
+
+function clearOverlayLabels() {
+  state.overlayLabels = [];
+}
+
+function addOverlayLabel(rect, text, source) {
+  if (!rect || !text) return;
+  state.overlayLabels.push({
+    x: rect.x,
+    y: rect.y,
+    width: rect.width,
+    height: rect.height,
+    text: String(text),
+    source: source || 'ocr',
+  });
 }
 
 function loadTemplates() {
@@ -117,6 +134,25 @@ function syncCaptureCanvasSize() {
   if (captureCanvas.height !== height) captureCanvas.height = height;
 }
 
+function drawTextLabelOnOverlay(text, x, y) {
+  const safeText = String(text || '?');
+  overlayCtx.font = 'bold 22px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+  overlayCtx.textBaseline = 'top';
+  const metrics = overlayCtx.measureText(safeText);
+  const labelWidth = Math.max(28, metrics.width + 14);
+  const labelHeight = 30;
+  const labelX = Math.max(4, x);
+  const labelY = Math.max(4, y - labelHeight - 4);
+
+  overlayCtx.fillStyle = 'rgba(0, 0, 0, 0.78)';
+  overlayCtx.fillRect(labelX, labelY, labelWidth, labelHeight);
+  overlayCtx.strokeStyle = '#22c55e';
+  overlayCtx.lineWidth = 2;
+  overlayCtx.strokeRect(labelX, labelY, labelWidth, labelHeight);
+  overlayCtx.fillStyle = '#ffffff';
+  overlayCtx.fillText(safeText, labelX + 7, labelY + 4);
+}
+
 function drawOverlay(rect) {
   const displayWidth = previewImage.clientWidth;
   const displayHeight = previewImage.clientHeight;
@@ -124,23 +160,39 @@ function drawOverlay(rect) {
   overlayCanvas.height = displayHeight;
   overlayCtx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
 
-  if (!rect || displayWidth === 0 || displayHeight === 0) return;
+  if (displayWidth === 0 || displayHeight === 0) return;
 
   const scaleX = overlayCanvas.width / captureCanvas.width;
   const scaleY = overlayCanvas.height / captureCanvas.height;
 
-  overlayCtx.strokeStyle = '#f59e0b';
-  overlayCtx.lineWidth = 4;
-  overlayCtx.strokeRect(rect.x * scaleX, rect.y * scaleY, rect.width * scaleX, rect.height * scaleY);
+  if (rect) {
+    overlayCtx.strokeStyle = '#f59e0b';
+    overlayCtx.lineWidth = 4;
+    overlayCtx.strokeRect(rect.x * scaleX, rect.y * scaleY, rect.width * scaleX, rect.height * scaleY);
 
-  overlayCtx.fillStyle = 'rgba(245, 158, 11, 0.18)';
-  overlayCtx.fillRect(rect.x * scaleX, rect.y * scaleY, rect.width * scaleX, rect.height * scaleY);
+    overlayCtx.fillStyle = 'rgba(245, 158, 11, 0.18)';
+    overlayCtx.fillRect(rect.x * scaleX, rect.y * scaleY, rect.width * scaleX, rect.height * scaleY);
+  }
 
   if (state.lastDigitRects && state.lastDigitRects.length > 0) {
     overlayCtx.strokeStyle = '#22c55e';
     overlayCtx.lineWidth = 2;
     state.lastDigitRects.forEach((digitRect) => {
       overlayCtx.strokeRect(digitRect.x * scaleX, digitRect.y * scaleY, digitRect.width * scaleX, digitRect.height * scaleY);
+    });
+  }
+
+  if (state.overlayLabels && state.overlayLabels.length > 0) {
+    state.overlayLabels.forEach((label) => {
+      const x = label.x * scaleX;
+      const y = label.y * scaleY;
+      const w = label.width * scaleX;
+      const h = label.height * scaleY;
+
+      overlayCtx.strokeStyle = label.source === 'tesseract' ? '#38bdf8' : '#22c55e';
+      overlayCtx.lineWidth = 3;
+      overlayCtx.strokeRect(x, y, w, h);
+      drawTextLabelOnOverlay(label.text, x, y);
     });
   }
 }
@@ -325,6 +377,7 @@ function recognizeMultipleDigits(areaRect) {
   const parts = [];
   const details = [];
   let accepted = 0;
+  clearOverlayLabels();
 
   digitRects.forEach((digitRect, index) => {
     const feature = buildFeatureFromRect(digitRect);
@@ -333,9 +386,11 @@ function recognizeMultipleDigits(areaRect) {
       accepted += 1;
       parts.push(String(result.template.label));
       details.push(`${index + 1}:${result.template.label}(${Math.round((1 - result.score) * 100)}%)`);
+      addOverlayLabel(digitRect, result.template.label, 'template');
     } else {
       parts.push('?');
       details.push(`${index + 1}:不明`);
+      addOverlayLabel(digitRect, '?', 'template');
     }
   });
 
@@ -367,6 +422,7 @@ function captureFrame() {
   state.lastRect = rect;
   state.lastFeature = null;
   state.lastDigitRects = [];
+  clearOverlayLabels();
 
   if (!rect) {
     setStatus('数字領域が検出できませんでした。明るさや位置を調整してください。');
@@ -388,6 +444,7 @@ function captureFrame() {
     const percent = Math.round((1 - singleResult.score) * 100);
     recognizedValue.textContent = singleResult.template.label;
     candidateInfo.textContent = `検出領域: x=${rect.x}, y=${rect.y}, w=${rect.width}, h=${rect.height} / 一致度: ${percent}% / 差分: ${singleResult.score.toFixed(3)}`;
+    addOverlayLabel(rect, singleResult.template.label, 'template');
     setStatus(`数字を読み取りました — ${singleResult.template.label}`);
   } else if (multiResult) {
     recognizedValue.textContent = multiResult.text;
@@ -396,6 +453,7 @@ function captureFrame() {
   } else {
     recognizedValue.textContent = '候補を検出しました';
     candidateInfo.textContent = `検出領域: x=${rect.x}, y=${rect.y}, w=${rect.width}, h=${rect.height} / 照合可能な数字テンプレートがありません`;
+    addOverlayLabel(rect, '?', 'template');
     setStatus('数字候補を検出しました。0〜9を1つずつテンプレート登録してください。');
   }
 
@@ -444,6 +502,7 @@ async function readByTesseract() {
   if (tesseractButton) tesseractButton.disabled = true;
   recognizedValue.textContent = '読取中...';
   candidateInfo.textContent = '';
+  clearOverlayLabels();
   setStatus('Tesseractで数字を読み取り中です...');
 
   try {
@@ -464,10 +523,12 @@ async function readByTesseract() {
     if (digits.length > 0) {
       recognizedValue.textContent = digits;
       candidateInfo.textContent = `Tesseract結果: ${rawText.replace(/\s+/g, ' ').trim()} / 数字のみ: ${digits}`;
+      addOverlayLabel(state.lastRect, digits, 'tesseract');
       setStatus(`Tesseractで数字を読み取りました — ${digits}`);
     } else {
       recognizedValue.textContent = '未認識';
       candidateInfo.textContent = `Tesseract結果: ${rawText.replace(/\s+/g, ' ').trim() || '空欄'} / 数字が見つかりませんでした`;
+      addOverlayLabel(state.lastRect, '?', 'tesseract');
       setStatus('Tesseractで数字を認識できませんでした。明るさ・ピント・距離を調整してください。');
     }
 
@@ -477,6 +538,8 @@ async function readByTesseract() {
     const message = error && error.message ? error.message : '不明なエラー';
     recognizedValue.textContent = 'エラー';
     candidateInfo.textContent = message;
+    addOverlayLabel(state.lastRect, 'ERR', 'tesseract');
+    drawOverlay(state.lastRect);
     setStatus(`Tesseract実行エラー: ${message}`);
   } finally {
     state.isTesseractRunning = false;
