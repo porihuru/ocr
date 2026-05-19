@@ -7,12 +7,12 @@
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <div class="app-version">v2026.05.19-2</div>
+  <div class="app-version">v2026.05.19-3</div>
 
   <main>
     <header>
       <h1>OCR テンプレート認識</h1>
-      <p>カメラ画像を取得して、数字領域を四角で囲み、登録テンプレートから数字を読み取ります。</p>
+      <p>カメラ画像を取得して、テンプレート方式または Google Vision で数字を読み取ります。</p>
     </header>
 
     <section class="camera-panel">
@@ -23,6 +23,8 @@
 
       <div class="controls-card">
         <button id="captureButton">数字を読む</button>
+        <button id="visionButton">Google Visionで読む</button>
+        <input id="visionApiKey" type="password" placeholder="Google Vision APIキー" />
         <button id="registerButton">テンプレート登録</button>
         <button id="exportButton">テンプレート保存</button>
         <label class="file-button">
