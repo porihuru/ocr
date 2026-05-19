@@ -7,6 +7,21 @@ body {
   background: #f4f7fb;
   color: #1f2937;
 }
+
+.app-version {
+  position: fixed;
+  top: 10px;
+  right: 14px;
+  z-index: 9999;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.85);
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+}
+
 main {
   max-width: 1080px;
   margin: 0 auto;
